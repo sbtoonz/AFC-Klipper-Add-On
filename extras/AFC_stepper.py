@@ -1,8 +1,9 @@
-2# 8 Track Automated Filament Changer
+# Armored Turtle Automated Filament Changer
 #
 # Copyright (C) 2024 Armored Turtle
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+
 import math
 import chelper
 from kinematics import extruder
@@ -105,6 +106,9 @@ class AFCExtruderStepper:
 
         # Defaulting to false so that extruder motors to not move until PREP has been called
         self._afc_prep_done = False
+
+        # Get and save base rotation dist
+        self.base_rotation_dist = self.extruder_stepper.stepper.get_rotation_distance()[0]
 
     def assist(self, value, is_resend=False):
         if self.afc_motor_rwd is None:
@@ -238,6 +242,9 @@ class AFCExtruderStepper:
             toolhead.dwell(self.next_cmd_time - print_time)
         else:
             self.next_cmd_time = print_time
+
+    def update_rotation_distance(self, multiplier):
+        self.extruder_stepper.stepper.set_rotation_distance( self.base_rotation_dist / multiplier )
 
 def load_config_prefix(config):
     return AFCExtruderStepper(config)

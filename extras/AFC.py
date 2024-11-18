@@ -1,8 +1,9 @@
-# 8 Track Automated Filament Changer
+# Armored Turtle Automated Filament Changer
 #
 # Copyright (C) 2024 Armored Turtle
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+
 import os
 import json
 
@@ -16,7 +17,6 @@ class afc:
         self.gcode = self.printer.lookup_object('gcode')
         self.VarFile = config.get('VarFile')
         self.Type = config.get('Type')
-        self.buffer_name = config.get('Buffer_Name', None)
         self.current = None
         self.failure = False
         self.lanes = {}
@@ -29,6 +29,7 @@ class afc:
         self.spoolman = config.getboolean('spoolman', False)
         if self.spoolman:
             self.spoolman_filament={}
+
         #LED SETTINGS
         self.ind_lights = None
         self.led_name = config.get('led_name')
@@ -38,6 +39,14 @@ class afc:
         self.led_loading = config.get('led_loading','1,1,0,0')
         self.led_unloading = config.get('led_unloading','1,1,.5,0')
         self.led_tool_loaded = config.get('led_tool_loaded','1,1,0,0')
+        self.led_advancing = config.get('led_buffer_advancing','0,0,1,0')
+        self.led_trailing = config.get('led_buffer_trailing','0,1,0,0')
+        self.led_buffer_disabled = config.get('led_buffer_disable', '0,0,0,0.25')
+
+        # BUFFER
+        self.buffer_name = config.get('Buffer_Name', None)
+        self.buffer = ''
+
         # HUB
         self.hub_move_dis = config.getfloat("hub_move_dis", 50)
         self.hub = ''
@@ -82,6 +91,7 @@ class afc:
         self.z_hop =config.getfloat("z_hop", 0)
         self.respool_on_prep =config.getboolean("respool_on_prep", False)
         self.gcode.register_command('HUB_LOAD', self.cmd_HUB_LOAD, desc=self.cmd_HUB_LOAD_help)
+        self.gcode.register_command('SET_SPOOL_ID', self.cmd_SET_SPOOL_ID, desc=self.cmd_SET_SPOOL_ID_help)
         if self.Type == 'Box_Turtle':
             self.gcode.register_command('LANE_UNLOAD', self.cmd_LANE_UNLOAD, desc=self.cmd_LANE_UNLOAD_help)
         self.gcode.register_command('TOOL_LOAD', self.cmd_TOOL_LOAD, desc=self.cmd_TOOL_LOAD_help)
@@ -114,8 +124,8 @@ class afc:
         self.afc_bowden_length = bowden_length
         msg = ("Config Bowden Length: {}\n".format(self.config_bowden_length) +
                "Previous Bowden Length: {}\n".format(config_bowden) +
-               "New Bowden Length: {}".format(bowden_length) +
-               "TO SAVE BOWDEN LENGTH afc_bowden_length MUST BE UNPDATED IN AFC.cfg")
+               "New Bowden Length: {}\n".format(bowden_length) +
+               "TO SAVE BOWDEN LENGTH afc_bowden_length MUST BE UPDATED IN AFC.cfg")
         self.gcode.respond_info(msg)
 
     cmd_LANE_MOVE_help = "Lane Manual Movements"
@@ -163,6 +173,24 @@ class afc:
         and assigns it to the instance variable `self.toolhead`.
         """
         self.toolhead = self.printer.lookup_object('toolhead')
+        
+    cmd_SET_SPOOL_ID_help = "Set spool ID for a specific lane"
+    
+    def cmd_SET_SPOOL_ID(self, gcmd):
+        lane = gcmd.get('LANE', None)
+        spool_id = gcmd.get('SPOOL_ID', None)
+    
+        if lane is None or spool_id is None:
+            self.gcode.respond_info("Error: Both LANE and SPOOL_ID must be provided")
+            return
+
+        try:
+            CUR_LANE = self.printer.lookup_object('AFC_stepper ' + lane)
+            self.lanes[CUR_LANE.unit][CUR_LANE.name]['spool_id'] = spool_id
+            self.save_vars()  # Persist the updated spool ID
+            self.gcode.respond_info(f"Spool ID {spool_id} set for lane {lane}")
+        except Exception as e:
+            self.gcode.respond_info(f"Error: Failed to set spool ID for lane {lane}: {str(e)}")
 
     cmd_TOOL_LOAD_help = "Load lane into tool"
     def cmd_TOOL_LOAD(self, gcmd):
@@ -291,6 +319,13 @@ class afc:
                 return
             #try: self.tool_end = self.printer.lookup_object('filament_switch_sensor tool_end').runout_helper
             #except: self.tool_end = None
+            buffer_warning = "Warning: Buffer {} not found in hardware config file"
+            if self.buffer_name is not None:
+                try: self.buffer = self.printer.lookup_object('AFC_buffer {}'.format(self.buffer_name))
+                except:
+                    self.AFC_error(buffer_warning.format(self.buffer_name))
+            else:
+                self.gcode.respond_info("Warning: No buffer defined in config file")
             check_success = False
             if self.current == None:
                 for UNIT in self.lanes.keys():
@@ -435,8 +470,7 @@ class afc:
 
         if check_success == True:
             self.gcode.respond_info(logo)
-            if self.buffer_name != None:
-                self.buffer = self.printer.lookup_object('AFC_buffer {}'.format(self.buffer_name))
+            if self.buffer != None:
                 if self.current != None:
                     self.buffer.enable_buffer()
         else:
@@ -542,7 +576,7 @@ class afc:
                 self.lanes[CUR_LANE.unit][CUR_LANE.name]['tool_loaded'] = True
 
                 self.current = CUR_LANE.name
-                if self.buffer_name != None:
+                if self.buffer != None:
                     self.buffer.enable_buffer()
 
                 self.afc_led(self.led_tool_loaded, CUR_LANE.led_index)
@@ -589,7 +623,7 @@ class afc:
         self.heater = extruder.get_heater() #Get extruder heater
         CUR_LANE.status = 'unloading'
 
-        if self.buffer_name != None:
+        if self.buffer != None:
             self.buffer.disable_buffer()
 
         self.afc_led(self.led_unloading, CUR_LANE.led_index)
@@ -672,7 +706,7 @@ class afc:
         self.failed_in_toolchange = False
         if lane != self.current:
             # Create save state
-            self.gcode.run_script_from_command("SAVE_GCODE_STATE NAME=_AFC_CHANGE_TOOL")
+            store_pos = self.toolhead.get_position()
             self.gcode.respond_info(" Tool Change - " + str(self.current) + " -> " + lane)
             if self.current != None:
                 CUR_LANE = self.printer.lookup_object('AFC_stepper ' + self.current)
@@ -684,7 +718,10 @@ class afc:
             CUR_LANE = self.printer.lookup_object('AFC_stepper ' + lane)
             self.TOOL_LOAD(CUR_LANE)
             # Restore state
-            self.gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=_AFC_CHANGE_TOOL MOVE=1 MOVE_SPEED={}".format(self.tool_unload_speed))
+            newpos = self.toolhead.get_position()
+            newpos[2] = store_pos[2]
+            self.toolhead.manual_move(newpos, self.tool_unload_speed)
+            self.toolhead.wait_moves()
             if self.is_printing() and self.is_paused():
                 self.failed_in_toolchange = True
 
@@ -701,8 +738,11 @@ class afc:
         try: self.hub = self.printer.lookup_object('filament_switch_sensor hub').runout_helper
         except: self.hub = None
         # Try to get tool filament sensor, if lookup fails default to None
-        try: self.tool=self.printer.lookup_object('filament_switch_sensor tool').runout_helper
-        except: self.tool= None
+        try: self.tool = self.printer.lookup_object('filament_switch_sensor tool').runout_helper
+        except: self.tool = None
+        # Try to get buffer, if lookup fails default to None
+        try: self.buffer = self.printer.lookup_object('AFC_buffer {}'.format(self.buffer_name))
+        except: self.buffer = None
         numoflanes = 0
         for UNIT in self.lanes.keys():
             str[UNIT]={}
@@ -711,18 +751,19 @@ class afc:
                 str[UNIT][NAME]={}
                 str[UNIT][NAME]['LANE'] = LANE.index
                 str[UNIT][NAME]['load'] = bool(LANE.load_state)
-                str[UNIT][NAME]["prep"]=bool(LANE.prep_state)
+                str[UNIT][NAME]["prep"] =bool(LANE.prep_state)
                 str[UNIT][NAME]["loaded_to_hub"] = self.lanes[UNIT][NAME]['hub_loaded']
-                str[UNIT][NAME]["material"]=self.lanes[UNIT][NAME]['material']
-                str[UNIT][NAME]["spool_id"]=self.lanes[UNIT][NAME]['spool_id']
-                str[UNIT][NAME]["color"]=self.lanes[UNIT][NAME]['color']
+                str[UNIT][NAME]["material"] = self.lanes[UNIT][NAME]['material']
+                str[UNIT][NAME]["spool_id"] = self.lanes[UNIT][NAME]['spool_id']
+                str[UNIT][NAME]["color"] = self.lanes[UNIT][NAME]['color']
 
                 numoflanes +=1
-        str["system"]={}
-        str["system"]['current_load']= self.current
+        str["system"] = {}
+        str["system"]['current_load'] = self.current
         # Set status of filament sensors if they exist, false if sensors are not found
         str["system"]['tool_loaded'] = True == self.tool_start.filament_present if self.tool_start is not None else False
         str["system"]['hub_loaded']  = True == self.hub.filament_present  if self.hub is not None else False
+        str["system"]['buffer'] = ('{} : {}'.format(self.buffer_name.upper(),self.buffer.buffer_status()) if self.buffer is not None else None)
         str["system"]['num_units'] = len(self.lanes)
         str["system"]['num_lanes'] = numoflanes
         return str
