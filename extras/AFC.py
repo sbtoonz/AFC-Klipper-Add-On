@@ -89,7 +89,9 @@ class afc:
         self.tool_load_speed =config.getfloat("tool_load_speed", 10)
         self.tool_max_unload_attempts = config.getint('tool_max_unload_attempts', 2)
         self.z_hop =config.getfloat("z_hop", 0)
+        self.respool_on_prep =config.getboolean("respool_on_prep", False)
         self.gcode.register_command('HUB_LOAD', self.cmd_HUB_LOAD, desc=self.cmd_HUB_LOAD_help)
+        self.gcode.register_command('SET_SPOOL_ID', self.cmd_SET_SPOOL_ID, desc=self.cmd_SET_SPOOL_ID_help)
         if self.Type == 'Box_Turtle':
             self.gcode.register_command('LANE_UNLOAD', self.cmd_LANE_UNLOAD, desc=self.cmd_LANE_UNLOAD_help)
         self.gcode.register_command('TOOL_LOAD', self.cmd_TOOL_LOAD, desc=self.cmd_TOOL_LOAD_help)
@@ -171,6 +173,24 @@ class afc:
         and assigns it to the instance variable `self.toolhead`.
         """
         self.toolhead = self.printer.lookup_object('toolhead')
+        
+    cmd_SET_SPOOL_ID_help = "Set spool ID for a specific lane"
+    
+    def cmd_SET_SPOOL_ID(self, gcmd):
+        lane = gcmd.get('LANE', None)
+        spool_id = gcmd.get('SPOOL_ID', None)
+    
+        if lane is None or spool_id is None:
+            self.gcode.respond_info("Error: Both LANE and SPOOL_ID must be provided")
+            return
+
+        try:
+            CUR_LANE = self.printer.lookup_object('AFC_stepper ' + lane)
+            self.lanes[CUR_LANE.unit][CUR_LANE.name]['spool_id'] = spool_id
+            self.save_vars()  # Persist the updated spool ID
+            self.gcode.respond_info(f"Spool ID {spool_id} set for lane {lane}")
+        except Exception as e:
+            self.gcode.respond_info(f"Error: Failed to set spool ID for lane {lane}: {str(e)}")
 
     cmd_TOOL_LOAD_help = "Load lane into tool"
     def cmd_TOOL_LOAD(self, gcmd):
@@ -274,9 +294,14 @@ class afc:
                 for LANE in self.lanes[UNIT].keys():
                     CUR_LANE = self.printer.lookup_object('AFC_stepper ' + LANE)
                     CUR_LANE.extruder_stepper.sync_to_extruder(None)
-                    CUR_LANE.move( -5, self.short_moves_speed, self.short_moves_accel, True)
-                    self.reactor.pause(self.reactor.monotonic() + 1)
-                    CUR_LANE.move( 5, self.short_moves_speed, self.short_moves_accel, True)
+                    if self.respool_on_prep:
+                        CUR_LANE.move( -5, self.short_moves_speed, self.short_moves_accel, True)
+                        self.reactor.pause(self.reactor.monotonic() + 1)
+                        CUR_LANE.move( 5, self.short_moves_speed, self.short_moves_accel, True)
+                    else:
+                        CUR_LANE.move( -5, self.short_moves_speed, self.short_moves_accel)
+                        self.reactor.pause(self.reactor.monotonic() + 1)
+                        CUR_LANE.move( 5, self.short_moves_speed, self.short_moves_accel)
                     # create T codes for macro use
                     #self.gcode.register_mux_command('T' + str(CUR_LANE.index - 1), "LANE", CUR_LANE.name, self.cmd_CHANGE_TOOL, desc=self.cmd_CHANGE_TOOL_help)
                     #$self.gcode.respond_info('Addin T' + str(CUR_LANE.index - 1) + ' with Lane defined as ' + CUR_LANE.name)
