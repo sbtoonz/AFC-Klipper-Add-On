@@ -1,3 +1,9 @@
+# Support for "neopixel" leds
+#
+# Copyright (C) 2019-2022  Kevin O'Connor <kevin@koconnor.net>
+#
+# This file may be distributed under the terms of the GNU GPLv3 license.
+
 import logging
 import time
 from . import led
