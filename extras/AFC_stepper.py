@@ -130,20 +130,20 @@ class AFCExtruderStepper:
             return
         if value < 0:
             value *= -1
-            assit_motor=self.afc_motor_rwd
+            assist_motor=self.afc_motor_rwd
         elif value > 0:
             if self.afc_motor_fwd is None:
                     return
             else:
-                assit_motor=self.afc_motor_fwd
+                assist_motor=self.afc_motor_fwd
         elif value == 0:
             toolhead = self.printer.lookup_object('toolhead')
             toolhead.register_lookahead_callback(lambda print_time: self.afc_motor_rwd._set_pin(print_time, value))
             if self.afc_motor_fwd is not None:
                 toolhead.register_lookahead_callback(lambda print_time: self.afc_motor_fwd._set_pin(print_time, value))
             return
-        value /= assit_motor.scale
-        if not assit_motor.is_pwm and value not in [0., 1.]:
+        value /= assist_motor.scale
+        if not assist_motor.is_pwm and value not in [0., 1.]:
             if value > 0:
                 value = 1
         # Obtain print_time and apply requested settings
@@ -156,7 +156,7 @@ class AFCExtruderStepper:
             toolhead.register_lookahead_callback(
             lambda print_time: self.afc_motor_enb._set_pin(print_time, enable))
         toolhead.register_lookahead_callback(
-            lambda print_time: assit_motor._set_pin(print_time, value))
+            lambda print_time: assist_motor._set_pin(print_time, value))
 
     def move(self, distance, speed, accel, assist_active=False):
         """
