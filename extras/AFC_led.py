@@ -1,15 +1,15 @@
-# Support for "neopixel" leds
-#
-# Copyright (C) 2019-2022  Kevin O'Connor <kevin@koconnor.net>
-#
-# This file may be distributed under the terms of the GNU GPLv3 license.
-
 import logging
+import time
 from . import led
+
 BACKGROUND_PRIORITY_CLOCK = 0x7fffffff00000000
 BIT_MAX_TIME = .000004
 RESET_MIN_TIME = .000050
 MAX_MCU_SIZE = 500  # Sanity check on LED chain length
+RETRY_LIMIT = 3
+RETRY_DELAY = 0.1  # 100ms delay between retries
+
+
 class AFCled:
     def __init__(self, config):
         self.printer = printer = config.get_printer()
@@ -81,23 +81,33 @@ class AFCled:
         # Transmit changes
         ucmd = self.neopixel_update_cmd.send
         for pos, count in diffs:
-            ucmd([self.oid, pos, new_data[pos:pos+count]],
-                 reqclock=BACKGROUND_PRIORITY_CLOCK)
-        old_data[:] = new_data
+            for attempt in range(RETRY_LIMIT):
+                try:
+                    ucmd([self.oid, pos, new_data[pos:pos+count]],
+                         reqclock=BACKGROUND_PRIORITY_CLOCK)
+                    break
+                except Exception as e:
+                    logging.error(f"Retry {attempt + 1}/{RETRY_LIMIT} for updating data failed: {e}")
+                    time.sleep(RETRY_DELAY)
+            else:
+                logging.error(f"Failed to update neopixel data after {RETRY_LIMIT} attempts.")
+                return
+
         # Instruct mcu to update the LEDs
         minclock = 0
         if print_time is not None:
             minclock = self.mcu.print_time_to_clock(print_time)
         scmd = self.neopixel_send_cmd.send
-        if self.printer.get_start_args().get('debugoutput') is not None:
-            return
-        for i in range(8):
-            params = scmd([self.oid], minclock=minclock,
-                          reqclock=BACKGROUND_PRIORITY_CLOCK)
-            if params['success']:
-                break
-        else:
-            logging.info("Neopixel update did not succeed")
+        for attempt in range(RETRY_LIMIT):
+            try:
+                params = scmd([self.oid], minclock=minclock,
+                              reqclock=BACKGROUND_PRIORITY_CLOCK)
+                if params['success']:
+                    return
+            except Exception as e:
+                logging.error(f"Retry {attempt + 1}/{RETRY_LIMIT} for sending data failed: {e}")
+                time.sleep(RETRY_DELAY)
+        logging.error("Neopixel update did not succeed after retries.")
 
     def update_leds(self, led_state, print_time):
         def reactor_bgfunc(eventtime):
@@ -110,8 +120,9 @@ class AFCled:
         return self.led_helper.get_status(eventtime)
 
     def led_change(self, index, status):
-        colors=list(map(float,status.split(',')))
+        colors = list(map(float, status.split(',')))
         transmit = 1
+
         def lookahead_bgfunc(print_time):
             if hasattr(self.led_helper, "_set_color"):
                 set_color_fn = self.led_helper._set_color
@@ -122,8 +133,10 @@ class AFCled:
             set_color_fn(index, colors)
             if transmit:
                 check_transmit_fn(print_time)
+
         toolhead = self.printer.lookup_object('toolhead')
         toolhead.register_lookahead_callback(lookahead_bgfunc)
+
 
 def load_config_prefix(config):
     return AFCled(config)

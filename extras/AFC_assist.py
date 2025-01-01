@@ -4,7 +4,7 @@
 import math
 
 # Global debug flag
-DEBUG = True
+DEBUG = False
 
 # Global constants
 PIN_MIN_TIME = 0.100
